@@ -41,17 +41,33 @@ async def run_pipeline(
 
     # 0. Instant Farewell Fast-Exit ───────────────────────────────────
     farewells = [
-        "bye", "goodbye", "alvida", "khuda hafiz",
-        "phari malishu", "shubh ratri", "theek hai bye", "bas theek hai bye",
+        "bye", "goodbye", "alvida", "khuda hafiz", "tata", "exit", "quit", "see you",
+        "phari malishu", "shubh ratri", "theek hai bye", "bas theek hai bye", "aavjo",
+        "thank you", "thankyou", "thanks", "dhanyawad", "shukriya", "aabhar", 
+        "આભાર", "ધન્યવાદ", "ધન્ય વાદ", "થોન્ક યુ", "થેન્ક યુ"
+    ]
+    thanks_terms = [
+        "thank", "thanks", "dhanyawad", "shukriya", "aabhar", "આભાર", "ધન્યવાદ", "થોન્ક યુ", "થેન્ક યુ"
     ]
     clean_text = text.lower().strip().replace(".", "").replace("!", "")
     if any(f in clean_text for f in farewells):
+        has_thanks = any(t in clean_text for t in thanks_terms)
         if lang == "hi":
-            farewell_msg = "जी, बिल्कुल। अपना ख्याल रखिये, गुडबाय!"
+            if has_thanks:
+                farewell_msg = "आपका बहुत-बहुत स्वागत है! सुवित सहायता से बात करने के लिए धन्यवाद, अपना ख्याल रखिये, गुडबाय!"
+            else:
+                farewell_msg = "जी, बिल्कुल। अपना ख्याल रखिये, गुडबाय!"
         elif lang == "gu":
-            farewell_msg = "જી, ચોક્કસ. તમારી સંભાળ રાખો, ગુડ-બાય!"
+            if has_thanks:
+                farewell_msg = "તમારું ખૂબ ખૂબ સ્વાગત છે! સુવિત સપોર્ટનો સંપર્ક કરવા બદલ આભાર, તમારી સંભાળ રાખો, ગુડ-બાય!"
+            else:
+                farewell_msg = "જી, ચોક્કસ. તમારી સંભાળ રાખો, ગુડ-બાય!"
         else:
-            farewell_msg = "Goodbye! Have a great day."
+            if has_thanks:
+                farewell_msg = "You are most welcome! Thank you for contacting Suvit Support. Have a great day, goodbye!"
+            else:
+                farewell_msg = "Goodbye! Have a great day."
+
         await ws_send_json({"type": "tts_start", "turn_id": turn_id})
         async for pcm in synthesize_pcm_stream(farewell_msg, lang, check_stale=is_stale):
             if is_stale():
@@ -60,6 +76,10 @@ async def run_pipeline(
             if pcm:
                 await ws_send_bytes(pcm)
         await ws_send_json({"type": "tts_end", "turn_id": turn_id})
+        
+        # Signal the client to automatically disconnect the call
+        await ws_send_json({"type": "call_ended"})
+
         metrics.total_turn_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
         log_turn(metrics)
         return farewell_msg

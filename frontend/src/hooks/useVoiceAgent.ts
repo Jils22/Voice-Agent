@@ -213,11 +213,22 @@ export function useVoiceAgent() {
                     setMessages(prev => [...prev, { role: "system", text: "⚠ " + message.message }]);
                     safeTransition("listening");
                     break;
+                case "call_ended":
+                    // Graceful auto-disconnect: calculate exactly when the scheduled audio timeline
+                    // will finish playing, add a tiny 300ms safety buffer, then automatically end the call!
+                    const playCtx = playContextRef.current;
+                    const delayMs = playCtx 
+                        ? Math.max(0, (nextPlayTimeRef.current - playCtx.currentTime) * 1000) + 300 
+                        : 300;
+                    setTimeout(() => {
+                        disconnect(false);
+                    }, delayMs);
+                    break;
             }
         };
 
         return ws;
-    }, [ensurePlayCtx, setAgentSpeaking, stopPlayback, safeTransition]);
+    }, [ensurePlayCtx, setAgentSpeaking, stopPlayback, safeTransition, disconnect]);
 
     const startCall = useCallback(async (lang: string) => {
         setMessages([]);
