@@ -11,9 +11,9 @@ class MicProcessor extends AudioWorkletProcessor {
     // Deepgram cloud VAD handles actual transcript boundaries.
     // ── Local VAD state ──────────────────────────────────────────
     this._IDLE_THRESH    = 0.025;  // Background noise gate when agent is silent
-    this._AGENT_THRESH   = 0.040;  // Interrupt threshold while agent speaks (ultra-responsive barge-in)
+    this._AGENT_THRESH   = 0.085;  // Raised threshold while agent speaks to ignore speaker echo feedback
     this._IDLE_FRAMES    = 8;      // ~64ms  — quick pickup when idle
-    this._AGENT_FRAMES   = 8;      // ~64ms  — instantaneous confirmation window
+    this._AGENT_FRAMES   = 12;     // ~96ms  — robust barge-in confirmation window
     
     this._SILENCE_FRAMES = 60;     
     this._speechCount    = 0;

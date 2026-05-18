@@ -106,10 +106,35 @@ async def voice_call(ws: WebSocket):
     
     session = SessionState()
     sessions[session.session_id] = session
-    
     stt_engine: Optional[DeepgramStreamingSTT] = None
 
+    def clean_transcription_text(text: str) -> str:
+        # Clean up common Deepgram phonetic transcription errors for Suvit brand and Tally integrations
+        import re
+        corrections = [
+            (r"\bsweet\b", "Suvit"),
+            (r"\bdelhi\b", "Tally"),
+            (r"\bdaily\b", "Tally"),
+            (r"\btele\b", "Tally"),
+            (r"\bteli\b", "Tally"),
+            (r"\bsuvit\b", "Suvit"),
+            (r"\btally\b", "Tally"),
+            (r"\bसवीत\b", "सुवित"),
+            (r"\bस्वीट\b", "सुवित"),
+            (r"\bडेली\b", "टैली"),
+            (r"\bदल्ली\b", "टैली"),
+            (r"\bदिल्ली\b", "टैली"),
+            (r"\bटेली\b", "टैली"),
+            (r"\bતલી\b", "સુવિત"),
+            (r"\bડેલી\b", "ટેલી")
+        ]
+        cleaned = text
+        for pattern, replacement in corrections:
+            cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+        return cleaned
+
     async def on_interim(text, lang):
+        text = clean_transcription_text(text)
         # Update detected lang on interim for live UI feedback
         actual_lang = detect_spoken_language(text, lang)
         if actual_lang in {"hi", "gu", "en"}:
@@ -137,6 +162,7 @@ async def voice_call(ws: WebSocket):
             logger.error(f"Error in pipeline task: {e}")
 
     async def on_final(text, lang):
+        text = clean_transcription_text(text)
         # ── DYNAMIC VOICE REPLY ───────────────────────────────────
         # 'lang' here is already smoothed by the STT engine's 2-turn buffer.
         # Auto-correct the language if Deepgram returned 'en' but the text contains Hindi/Gujarati script.
