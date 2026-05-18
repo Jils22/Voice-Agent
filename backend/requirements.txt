@@ -1,0 +1,45 @@
+# --- Core API & Web Server ---
+fastapi
+uvicorn[standard]
+websockets
+python-dotenv
+python-multipart
+httpx
+requests
+
+# --- AI Orchestration (LangChain & LangGraph) ---
+langchain
+langchain-community
+langchain-core
+langchain-huggingface
+langchain-text-splitters
+langgraph
+
+# --- Search & RAG Foundation ---
+faiss-cpu
+sentence-transformers
+rank_bm25
+
+# --- Speech & Voice Services ---
+deepgram-sdk
+google-genai
+openai
+sarvamai
+edge-tts
+
+# --- Knowledge Base Scraper & Data ---
+beautifulsoup4
+lxml
+markdownify
+
+# --- Audio Processing & Math ---
+numpy>=1.26.0
+scipy>=1.13.0
+pydub>=0.25.1
+
+# --- Real-time Streaming (LiveKit) ---
+livekit
+livekit-agents
+livekit-plugins-openai
+livekit-plugins-deepgram
+livekit-plugins-silero
