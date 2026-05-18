@@ -8,27 +8,14 @@ async def generate_answer_stream(query: str, retrieved_chunks: list[str], lang: 
     """Streams tokens from GPT-4o-mini."""
     context = "\n\n".join(retrieved_chunks)
     
-    # Dynamic language mirroring instructions
-    lang_lower = lang.lower().strip()
-    if lang_lower.startswith("hi"):
-        lang_instruction = (
-            "1. Respond STRICTLY in HINDI/HINGLISH using Devanagari script.\n"
-            "2. Use natural Hinglish/Hindi conversational fillers like 'Ji', 'Theek hai', 'Bilkul', or 'Dekhiye' naturally.\n"
-            "3. Keep common English technical terms (like 'ledger', 'sync', 'upload', 'create ledger', 'select ledger') "
-            "as technical Hinglish terms. You can write them in Latin letters or native Devanagari (e.g., 'ledger select कीजिये' or 'select ledger कीजिये') naturally."
-        )
-    elif lang_lower.startswith("gu"):
-        lang_instruction = (
-            "1. Respond STRICTLY in GUJARATI using Gujarati script.\n"
-            "2. Use natural Gujarati conversational fillers naturally.\n"
-            "3. Incorporate common English technical terms (like 'ledger', 'sync', 'upload') naturally in Gujarati."
-        )
-    else:
-        # Default to English
-        lang_instruction = (
-            "1. Respond STRICTLY in English. Do not use Hindi words, phrases, or Devanagari script.\n"
-            "2. Use English conversational fillers (like 'Sure', 'Okay', 'Right', 'Let me check') naturally."
-        )
+    # Unified Multilingual Prompt Instruction (Empowers LLM to be the master language router)
+    lang_instruction = (
+        "You are a multilingual voice assistant. Dynamically respond in the language spoken by the user:\n"
+        "1. If the user's query is semantically or phonetically in English (even if written or transliterated in Gujarati or Devanagari scripts, e.g., 'હાઉ મેની' for 'how many', 'હાઉ કેન આઈ' for 'how can I', 'હા એમ નોટેબલ' for 'how I am not able'), respond STRICTLY in English using standard Latin characters. Use natural English conversational fillers.\n"
+        "2. If the user's query is semantically or phonetically in Hindi or Hinglish, respond STRICTLY in HINDI/HINGLISH using Devanagari script. Keep common technical terms in Hinglish (e.g., 'ledger create', 'sync complete'). Use Hindi fillers like 'Ji', 'Bilkul' naturally.\n"
+        "3. If the user's query is semantically and phonetically in Gujarati, respond STRICTLY in GUJARATI using Gujarati script. Keep technical terms in Hinglish naturally. Use Gujarati fillers naturally.\n"
+        f"The primary target language for this call is: {lang.upper()}. Default to this target language if the query is ambiguous, but always match the user's phonetic language if they switch."
+    )
 
     prompt = SYSTEM_PROMPT.format(
         language_instruction=lang_instruction,

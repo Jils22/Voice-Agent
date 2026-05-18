@@ -80,10 +80,24 @@ async def startup_event():
 class SessionState:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     history: list[dict] = field(default_factory=list)
-    language: str = "en"
+    language: str = "en"           # user's pre-selected tab language (used for greeting)
+    detected_lang: str = "en"      # dynamically updated from Deepgram each turn
     speculative_chunks: list[str] = field(default_factory=list)
+    active_task: Optional[asyncio.Task] = None
 
 sessions: dict[str, SessionState] = {}
+
+def detect_spoken_language(text: str, current_lang: str) -> str:
+    # Check for Devanagari range (U+0900 to U+097F) - represents Hindi/Hinglish text
+    if any('\u0900' <= char <= '\u097F' for char in text):
+        return "hi"
+    # Check for Gujarati range (U+0A80 to U+0AFF) - represents Gujarati text
+    if any('\u0A80' <= char <= '\u0AFF' for char in text):
+        return "gu"
+    # If there is no Hindi or Gujarati characters, but there are Latin letters, it must be English
+    if any('a' <= char.lower() <= 'z' for char in text):
+        return "en"
+    return current_lang
 
 @app.websocket("/ws/call")
 async def voice_call(ws: WebSocket):
@@ -96,19 +110,51 @@ async def voice_call(ws: WebSocket):
     stt_engine: Optional[DeepgramStreamingSTT] = None
 
     async def on_interim(text, lang):
-        # DYNAMIC VOICE REPLY: Send dynamically detected language 'lang' if using dynamic mode
-        # await ws.send_json({"type": "transcript_update", "text": text, "language": lang})
-        await ws.send_json({"type": "transcript_update", "text": text, "language": session.language})
+        # Update detected lang on interim for live UI feedback
+        actual_lang = detect_spoken_language(text, lang)
+        if actual_lang in {"hi", "gu", "en"}:
+            session.detected_lang = actual_lang
+        await ws.send_json({"type": "transcript_update", "text": text, "language": session.detected_lang})
+
+    async def run_pipeline_task(text: str, lang_to_use: str, turn_id: str, chunks_to_use: list[str]):
+        try:
+            answer = await run_pipeline(
+                text=text,
+                lang=lang_to_use,
+                turn_id=turn_id,
+                history=session.history,
+                ws_send_bytes=ws.send_bytes,
+                ws_send_json=ws.send_json,
+                initial_chunks=chunks_to_use
+            )
+            if answer:
+                session.history.append({"role": "user", "content": text})
+                session.history.append({"role": "assistant", "content": answer})
+                session.history = session.history[-16:]  # keep last 8 turns
+        except asyncio.CancelledError:
+            logger.info(f"Pipeline task for turn {turn_id} cancelled.")
+        except Exception as e:
+            logger.error(f"Error in pipeline task: {e}")
 
     async def on_final(text, lang):
-        # --- LANGUAGE SELECTION MODE ---
-        # OPTION A: DYNAMIC VOICE REPLY (Agent dynamically replies in the spoken language):
-        # lang_to_use = lang if lang in {"hi", "gu"} else session.language
-        
-        # OPTION B: LOCKED MODE (Agent strictly responds in user's pre-selected tab language):
-        lang_to_use = session.language
-        
-        # 1. Update UI
+        # ── DYNAMIC VOICE REPLY ───────────────────────────────────
+        # 'lang' here is already smoothed by the STT engine's 2-turn buffer.
+        # Auto-correct the language if Deepgram returned 'en' but the text contains Hindi/Gujarati script.
+        actual_lang = detect_spoken_language(text, lang)
+        if actual_lang in {"hi", "gu", "en"}:
+            session.detected_lang = actual_lang
+        lang_to_use = session.detected_lang
+
+        logger.info(f"[TURN] lang={lang_to_use} | text={text[:60]}")
+
+        # Cancel any active running pipeline task to instantly clear resources and stop playback
+        if session.active_task and not session.active_task.done():
+            logger.info("New turn detected: Cancelling previous running pipeline task.")
+            session.active_task.cancel()
+            pipeline.active_turn_id = None
+            await ws.send_json({"type": "clear_queue"})
+
+        # 1. Update UI with the detected language
         await ws.send_json({"type": "transcript", "user": text, "language": lang_to_use})
         
         # 2. Trigger pipeline
@@ -116,31 +162,26 @@ async def voice_call(ws: WebSocket):
         
         # Use speculative chunks if available
         chunks_to_use = session.speculative_chunks
-        session.speculative_chunks = [] # clear after use
+        session.speculative_chunks = []  # clear after use
         
-        # run_pipeline will handle RAG (if chunks empty), filler, LLM, and TTS
-        answer = await run_pipeline(
-            text=text,
-            lang=lang_to_use,
-            turn_id=turn_id,
-            history=session.history,
-            ws_send_bytes=ws.send_bytes,
-            ws_send_json=ws.send_json,
-            initial_chunks=chunks_to_use
+        # Run pipeline in a background task so STT listener loop is NEVER blocked
+        session.active_task = asyncio.create_task(
+            run_pipeline_task(text, lang_to_use, turn_id, chunks_to_use)
         )
-        
-        if answer:
-            session.history.append({"role": "user", "content": text})
-            session.history.append({"role": "assistant", "content": answer})
-            session.history = session.history[-16:] # keep last 8 turns
 
     async def on_speech_started():
-        # BYPASSED CLOUD VAD INTERRUPTION:
-        # We strictly bypass Deepgram's cloud VAD speech start triggers on the server.
-        # This is because Deepgram's cloud VAD lacks context regarding the client-side
-        # mute state, hardware clicks, and high noise-rejection thresholds.
-        # We rely 100% on the client's high-fidelity, mute-aware VAD in audio-processor.js 
-        # to send explicit 'interrupt' events when a true user barge-in is verified.
+        # NOTE: We intentionally do NOT kill the pipeline here.
+        #
+        # Deepgram's cloud SpeechStarted VAD fires from any noise, including
+        # background noise that leaks through even when the user is muted.
+        # There is NO mute guard on the Deepgram side.
+        #
+        # The ONLY valid interrupt path is an explicit {"type": "interrupt"} 
+        # message from the client-side AudioWorklet, which IS guarded by:
+        #   !isMuted && agentSpeakingRef.current && !interruptSentRef.current
+        #
+        # Killing the pipeline here caused the agent to stop mid-sentence
+        # whenever Deepgram misdetected background noise as speech while muted.
         pass
 
     async def on_speculative(chunks):
@@ -165,14 +206,14 @@ async def voice_call(ws: WebSocket):
             
             if msg_type == "call_start":
                 session.language = data.get("language", "en")
-                
-                # --- STT ENGINE MODE ---
-                # OPTION A: DYNAMIC STT DETECTION (Deepgram auto-detects any spoken language):
-                # dg_lang = "multi"
-                
-                # OPTION B: LOCKED STT CONFIGURATION (Locks Deepgram to improve transcription accuracy):
-                dg_lang = "hi" if session.language == "hi" else ("gu" if session.language == "gu" else "en")
-                
+                session.detected_lang = session.language  # seed detected lang with the pre-selected one
+
+                # Deepgram's dynamic multi-language model supports major languages like English and Hindi
+                # but does NOT support Gujarati phonetics. Therefore, if the user starts the call with
+                # Gujarati pre-selected, we explicitly lock Deepgram to "gu" for perfect native transcription.
+                # Otherwise, we use "multi" for seamless dynamic Hindi/English switching.
+                dg_lang = "gu" if session.language == "gu" else "multi"
+
                 stt_engine = DeepgramStreamingSTT(
                     on_interim=on_interim,
                     on_final=on_final,
@@ -183,7 +224,7 @@ async def voice_call(ws: WebSocket):
                 await stt_engine.start()
                 await ws.send_json({"type": "call_accepted", "session_id": session.session_id})
                 
-                # TRIGGER DIRECT GREETING (Principle: Immediate Feedback)
+                # Greet in the pre-selected tab language (before dynamic detection kicks in)
                 greeting_text = {
                     "en": "Hello! I am your Suvit AI assistant. How can I help you today?",
                     "hi": "नमस्ते! मैं आपका सुवित एआई सहायक हूँ। मैं आपकी क्या मदद कर सकता हूँ?",
@@ -209,6 +250,9 @@ async def voice_call(ws: WebSocket):
             elif msg_type == "interrupt":
                 # Explicit interrupt from client
                 pipeline.active_turn_id = None
+                if session.active_task and not session.active_task.done():
+                    logger.info("Interrupt message received: Cancelling active pipeline task.")
+                    session.active_task.cancel()
                 await ws.send_json({"type": "clear_queue"})
                 logger.info(f"Interrupt received for session {session.session_id}")
 

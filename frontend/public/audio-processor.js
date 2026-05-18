@@ -10,10 +10,10 @@ class MicProcessor extends AudioWorkletProcessor {
     // Used ONLY for instant interrupt detection — not for gating PCM.
     // Deepgram cloud VAD handles actual transcript boundaries.
     // ── Local VAD state ──────────────────────────────────────────
-    this._IDLE_THRESH    = 0.025;  // Less sensitive to background noise when idle
-    this._AGENT_THRESH   = 0.025;  // Highly sensitive to instantly halt on user voice
-    this._IDLE_FRAMES    = 8;      // ~64ms
-    this._AGENT_FRAMES   = 5;      // ~40ms (Instant trigger on first syllable!)
+    this._IDLE_THRESH    = 0.025;  // Background noise gate when agent is silent
+    this._AGENT_THRESH   = 0.040;  // Interrupt threshold while agent speaks (ultra-responsive barge-in)
+    this._IDLE_FRAMES    = 8;      // ~64ms  — quick pickup when idle
+    this._AGENT_FRAMES   = 8;      // ~64ms  — instantaneous confirmation window
     
     this._SILENCE_FRAMES = 60;     
     this._speechCount    = 0;
@@ -24,10 +24,10 @@ class MicProcessor extends AudioWorkletProcessor {
     this.port.onmessage = ({ data }) => {
       if (data.type === 'agent_speaking') {
         this._agentOn = data.v;
-        // Reset entire VAD state on state change to avoid carryover and ensure clean barge-in
-        this._speechCount = 0; 
+        // Reset ALL counters on mode change to avoid carryover state
+        this._speechCount  = 0;
         this._silenceCount = 0;
-        this._inSpeech = false;
+        this._inSpeech     = false;
       }
     };
   }

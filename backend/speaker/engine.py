@@ -23,11 +23,14 @@ def wav_to_int16(wav_bytes: bytes) -> np.ndarray:
         with wave.open(bf, 'rb') as wf:
             return np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).copy()
 
-async def synthesize_pcm_stream(text: str, lang: str):
+async def synthesize_pcm_stream(text: str, lang: str, check_stale = None):
     """Synthesize one phrase chunk. Apply fade in/out for smooth boundaries."""
     # Safeguard: Skip empty or non-speakable punctuation-only strings
     import re
     if not text or not re.search(r'\w', text):
+        return
+
+    if check_stale and check_stale():
         return
 
     # Map short language codes to regional codes required by Sarvam TTS
@@ -57,24 +60,45 @@ async def synthesize_pcm_stream(text: str, lang: str):
             "model": "bulbul:v2"
         }
         
-        try:
-            response = await client.post(url, json=payload, headers=headers, timeout=10.0)
-            if response.status_code != 200:
-                print(f"[SARVAM ERROR {response.status_code}] {response.text}")
-            response.raise_for_status()
-            data = response.json()
-            wav_b64 = data["audios"][0]
-            import base64
-            wav_bytes = base64.b64decode(wav_b64)
-            pcm = wav_to_int16(wav_bytes)
-            pcm = apply_fade_in(apply_fade_out(pcm))
+        retries = 3
+        delay = 0.1  # start with 100ms
+        for attempt in range(retries):
+            try:
+                if check_stale and check_stale():
+                    return
+                response = await client.post(url, json=payload, headers=headers, timeout=5.0)
+                if check_stale and check_stale():
+                    return
+                if response.status_code != 200:
+                    print(f"[SARVAM ERROR {response.status_code}] {response.text}")
+                response.raise_for_status()
+                data = response.json()
+                wav_b64 = data["audios"][0]
+                import base64
+                wav_bytes = base64.b64decode(wav_b64)
+                pcm = wav_to_int16(wav_bytes)
+                pcm = apply_fade_in(apply_fade_out(pcm))
 
-            # Stream in 8KB chunks to WebSocket
-            chunk_size = 8192
-            pcm_bytes = pcm.tobytes()
-            for i in range(0, len(pcm_bytes), chunk_size):
-                yield pcm_bytes[i:i + chunk_size]
-        except Exception as e:
-            import traceback
-            print(f"[TTS ERROR] Exception occurred during Sarvam TTS synthesis for text: {repr(text)}")
-            traceback.print_exc()
+                # Stream in 8KB chunks to WebSocket
+                chunk_size = 8192
+                pcm_bytes = pcm.tobytes()
+                for i in range(0, len(pcm_bytes), chunk_size):
+                    if check_stale and check_stale():
+                        return
+                    yield pcm_bytes[i:i + chunk_size]
+                
+                # Success, exit retry loop
+                return
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.HTTPStatusError) as e:
+                print(f"[SARVAM RETRY] Attempt {attempt+1}/{retries} failed: {e}. Retrying in {delay}s...")
+                if check_stale and check_stale():
+                    return
+                await asyncio.sleep(delay)
+                delay *= 2  # exponential backoff
+            except Exception as e:
+                if check_stale and check_stale():
+                    return
+                import traceback
+                print(f"[TTS ERROR] Permanent exception during Sarvam synthesis: {repr(text)}")
+                traceback.print_exc()
+                return

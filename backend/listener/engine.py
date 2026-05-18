@@ -18,6 +18,7 @@ class DeepgramStreamingSTT:
     """
     Persistent Deepgram Live WebSocket for continuous realtime STT + Neural VAD.
     Includes Speculative Retrieval on stable interim transcripts.
+    Dynamic language detection with smoothing buffer to prevent single-turn misclassification.
     """
 
     def __init__(
@@ -45,6 +46,15 @@ class DeepgramStreamingSTT:
         self._interim_stable_since: float = 0
         self._speculative_task: asyncio.Task | None = None
 
+        # ── Dynamic Language Smoothing ────────────────────────────────
+        # Prevents one misdetected turn from flipping the reply language.
+        # A new language must appear consecutively for LANG_CONFIRM_TURNS
+        # final turns before being accepted as the active language.
+        self._confirmed_lang: str = "en"  # the smoothed, active language
+        self._candidate_lang: str = "en"  # the last raw detected language
+        self._candidate_count: int = 0    # streak count for the candidate
+        self._LANG_CONFIRM_TURNS: int = 2 # require 2 consecutive turns to switch
+
     async def start(self):
         async with self._lock:
             if self._running:
@@ -59,7 +69,7 @@ class DeepgramStreamingSTT:
                 interim_results="true",
                 utterance_end_ms=1000,
                 vad_events="true",
-                endpointing=1000, # Set to 1000 to ensure fast response once user finishes speaking
+                endpointing=1000, # Increased from 300 to 1000 to prevent halting user mid-sentence
                 punctuate="true",
                 smart_format="true",
             )
@@ -103,22 +113,42 @@ class DeepgramStreamingSTT:
         except Exception as e:
             log.error("[STT] listen error: %s", e)
 
+    def _smooth_language(self, raw_lang: str) -> str:
+        """Smoothing buffer: require LANG_CONFIRM_TURNS consecutive detections to accept a new language."""
+        if raw_lang == self._candidate_lang:
+            self._candidate_count += 1
+        else:
+            # New candidate language spotted — reset streak
+            self._candidate_lang = raw_lang
+            self._candidate_count = 1
+
+        if self._candidate_count >= self._LANG_CONFIRM_TURNS:
+            self._confirmed_lang = raw_lang
+
+        return self._confirmed_lang
+
     async def _handle_result(self, result: ListenV1Results):
         alt = result.channel.alternatives[0]
         text = (alt.transcript or "").strip()
         if not text: return
 
+        # ── Language Detection ──────────────────────────────────────
         raw_lang = getattr(alt, "detected_language", None) or "en"
-        lang = raw_lang.split("-")[0].lower()
-        if lang not in {"gu", "hi", "en"}: lang = "en"
+        detected = raw_lang.split("-")[0].lower()
+        if detected not in {"gu", "hi", "en"}: detected = "en"
 
         is_final = result.is_final or result.speech_final
 
         if is_final:
-            self._last_interim = "" # reset
+            # Apply smoothing only on final turns (reduces noise from interim misdetections)
+            lang = self._smooth_language(detected)
+            self._last_interim = ""  # reset
+            log.info("[STT] Final | raw_lang=%s → smoothed=%s | text=%s", detected, lang, text[:60])
             if self._on_final:
                 await self._on_final(text, lang)
         else:
+            # For interim, pass raw detected lang (used only for UI display)
+            lang = detected
             # Speculative retrieval logic (Principle 6)
             now = time.perf_counter()
             if text != self._last_interim:
