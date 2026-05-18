@@ -79,8 +79,12 @@ npm run dev
 
 ---
 
-## ✨ Recent Improvements (UI & VAD Upgrade)
+## ✨ Core Architectural Improvements
 
+- **Non-Blocking STT Background Task Model**: Refactored the orchestrator flow so the STT listener engine's processing loop is **never blocked** by downstream pipeline execution. The response pipeline now runs inside fully cancelable, background `asyncio.Task` instances.
+- **Phonetic Transliteration Parsing (LLM Routing Guard)**: Instructed the LLM engine (`GPT-4o-mini`) to handle English speech transliterated into Devanagari or Gujarati script characters (e.g. `"હાઉ મેની"` or `"હા એમ નોટેબલ"`). The brain accurately understands the English query, responds in standard Latin characters, and dynamically routes it to the English speaker voice (`en-IN`) seamlessly.
+- **Instant Client-Side Timeline Purge**: Added a reactive client-side callback that synchronously purges the browser's `AudioContext` timeline queue as soon as a new user confirmed turn begins. This completely avoids "speech bleed" where the browser finishes playing back previously buffered audio before taking the new answer.
+- **Sarvam AI Resilient Retry Loop**: Added an exponential backoff retry system for Sarvam TTS HTTP requests, automatically capturing and recovering from temporary connection drops or DNS resolution failures (`ConnectError`) inside the synthesis engine.
 - **Premium UI Aesthetics**: Introduced a dynamic, glassmorphism-inspired interface using Framer Motion. 
 - **VoiceOrb Visualizer**: A highly responsive, GPU-accelerated animated orb that reacts logarithmically to microphone `vadEnergy` in real-time.
 - **Strict Background Noise Rejection**: Upgraded the local `audioWorklet` VAD (`audio-processor.js`). The agent now demands a higher threshold of sustained vocal volume to be interrupted, completely ignoring background noise or typing.
