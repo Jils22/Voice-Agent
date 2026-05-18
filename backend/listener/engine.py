@@ -59,7 +59,7 @@ class DeepgramStreamingSTT:
                 interim_results="true",
                 utterance_end_ms=1000,
                 vad_events="true",
-                endpointing=1000, # Increased from 300 to 1000 to prevent halting user mid-sentence
+                endpointing=1000, # Set to 1000 to ensure fast response once user finishes speaking
                 punctuate="true",
                 smart_format="true",
             )

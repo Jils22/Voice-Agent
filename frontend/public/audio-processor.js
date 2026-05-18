@@ -11,9 +11,9 @@ class MicProcessor extends AudioWorkletProcessor {
     // Deepgram cloud VAD handles actual transcript boundaries.
     // ── Local VAD state ──────────────────────────────────────────
     this._IDLE_THRESH    = 0.025;  // Less sensitive to background noise when idle
-    this._AGENT_THRESH   = 0.090;  // Strictly requires loud voice to interrupt agent
+    this._AGENT_THRESH   = 0.025;  // Highly sensitive to instantly halt on user voice
     this._IDLE_FRAMES    = 8;      // ~64ms
-    this._AGENT_FRAMES   = 20;     // ~160ms (Must be a highly sustained word to interrupt)
+    this._AGENT_FRAMES   = 5;      // ~40ms (Instant trigger on first syllable!)
     
     this._SILENCE_FRAMES = 60;     
     this._speechCount    = 0;
@@ -24,8 +24,10 @@ class MicProcessor extends AudioWorkletProcessor {
     this.port.onmessage = ({ data }) => {
       if (data.type === 'agent_speaking') {
         this._agentOn = data.v;
-        // Reset count on state change to avoid carryover
+        // Reset entire VAD state on state change to avoid carryover and ensure clean barge-in
         this._speechCount = 0; 
+        this._silenceCount = 0;
+        this._inSpeech = false;
       }
     };
   }

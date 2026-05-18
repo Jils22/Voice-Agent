@@ -31,6 +31,8 @@ export function useVoiceAgent() {
     const [currentLang, setCurrentLang] = useState<string>("en");
     const [callActive, setCallActive] = useState<boolean>(false);
     const [isMuted, setIsMuted] = useState<boolean>(false);
+    const isMutedRef = useRef<boolean>(false);
+    const activeTurnIdRef = useRef<string | null>(null);
     const [interimText, setInterimText] = useState<string>("");
 
     const wsRef = useRef<WebSocket | null>(null);
@@ -124,6 +126,8 @@ export function useVoiceAgent() {
         safeTransition("idle");
         setVadEnergy(0);
         setIsMuted(false);
+        isMutedRef.current = false;
+        activeTurnIdRef.current = null;
         if(shouldResetMessages) setMessages([]);
     }, [stopPlayback, safeTransition]);
 
@@ -140,9 +144,16 @@ export function useVoiceAgent() {
             }, { once: true });
             ws.addEventListener("error", () => reject(new Error("WS connection failed")), { once: true });
         });
-
         ws.onmessage = async (event) => {
             if (event.data instanceof ArrayBuffer) {
+                // If there is no active turn, completely discard stale audio packets in-flight!
+                if (!activeTurnIdRef.current) {
+                    return;
+                }
+                // Set speaking state immediately when audio packets start streaming from the server (covers fillers)
+                if (!agentSpeakingRef.current) {
+                    setAgentSpeaking(true);
+                }
                 // Remove strict speaking check for initial greeting/buffers
                 await ensurePlayCtx();
                 if (!playContextRef.current || !gainNodeRef.current) return;
@@ -181,14 +192,19 @@ export function useVoiceAgent() {
                     setInterimText(message.text);
                     break;
                 case "tts_start":
+                    activeTurnIdRef.current = message.turn_id || "active";
                     setAgentSpeaking(true);
                     ensurePlayCtx();
                     break;
                 case "tts_end":
-                    setAgentSpeaking(false);
-                    safeTransition("listening");
+                    // Only end speaking if this matches the active turn ID
+                    if (activeTurnIdRef.current === (message.turn_id || "active")) {
+                        setAgentSpeaking(false);
+                        safeTransition("listening");
+                    }
                     break;
                 case "clear_queue":
+                    activeTurnIdRef.current = null; // Discard any subsequent stale audio chunks
                     stopPlayback();
                     // If we were speaking and got clear_queue, we are interrupting
                     safeTransition("recovering");
@@ -243,7 +259,7 @@ export function useVoiceAgent() {
                 } else if (data.type === 'speech_start') {
                     // Principle: Mute must be absolute. 
                     // Do not interrupt if user is muted OR if we just started speaking (Echo protection)
-                    if (!isMuted && agentSpeakingRef.current && !interruptSentRef.current && ws.readyState === WebSocket.OPEN) {
+                    if (!isMutedRef.current && agentSpeakingRef.current && !interruptSentRef.current && ws.readyState === WebSocket.OPEN) {
                         interruptSentRef.current = true;
                         ws.send(JSON.stringify({ type: 'interrupt' }));
                         // Instantly transition to interrupting
@@ -264,6 +280,7 @@ export function useVoiceAgent() {
         if (!streamRef.current) return;
         const newState = !isMuted;
         setIsMuted(newState);
+        isMutedRef.current = newState; // Keep ref updated to bypass hook stale closure
         streamRef.current.getAudioTracks().forEach(track => {
             track.enabled = !newState; 
         });

@@ -96,11 +96,20 @@ async def voice_call(ws: WebSocket):
     stt_engine: Optional[DeepgramStreamingSTT] = None
 
     async def on_interim(text, lang):
-        await ws.send_json({"type": "transcript_update", "text": text, "language": lang})
+        # DYNAMIC VOICE REPLY: Send dynamically detected language 'lang' if using dynamic mode
+        # await ws.send_json({"type": "transcript_update", "text": text, "language": lang})
+        await ws.send_json({"type": "transcript_update", "text": text, "language": session.language})
 
     async def on_final(text, lang):
+        # --- LANGUAGE SELECTION MODE ---
+        # OPTION A: DYNAMIC VOICE REPLY (Agent dynamically replies in the spoken language):
+        # lang_to_use = lang if lang in {"hi", "gu"} else session.language
+        
+        # OPTION B: LOCKED MODE (Agent strictly responds in user's pre-selected tab language):
+        lang_to_use = session.language
+        
         # 1. Update UI
-        await ws.send_json({"type": "transcript", "user": text, "language": lang})
+        await ws.send_json({"type": "transcript", "user": text, "language": lang_to_use})
         
         # 2. Trigger pipeline
         turn_id = str(uuid.uuid4())
@@ -112,7 +121,7 @@ async def voice_call(ws: WebSocket):
         # run_pipeline will handle RAG (if chunks empty), filler, LLM, and TTS
         answer = await run_pipeline(
             text=text,
-            lang=lang,
+            lang=lang_to_use,
             turn_id=turn_id,
             history=session.history,
             ws_send_bytes=ws.send_bytes,
@@ -126,10 +135,13 @@ async def voice_call(ws: WebSocket):
             session.history = session.history[-16:] # keep last 8 turns
 
     async def on_speech_started():
-        # Principle 1: Local VAD kills playback on client. 
-        # Here we kill the server-side pipeline.
-        pipeline.active_turn_id = None # stop any running pipeline
-        await ws.send_json({"type": "clear_queue"})
+        # BYPASSED CLOUD VAD INTERRUPTION:
+        # We strictly bypass Deepgram's cloud VAD speech start triggers on the server.
+        # This is because Deepgram's cloud VAD lacks context regarding the client-side
+        # mute state, hardware clicks, and high noise-rejection thresholds.
+        # We rely 100% on the client's high-fidelity, mute-aware VAD in audio-processor.js 
+        # to send explicit 'interrupt' events when a true user barge-in is verified.
+        pass
 
     async def on_speculative(chunks):
         session.speculative_chunks = chunks
@@ -153,12 +165,20 @@ async def voice_call(ws: WebSocket):
             
             if msg_type == "call_start":
                 session.language = data.get("language", "en")
+                
+                # --- STT ENGINE MODE ---
+                # OPTION A: DYNAMIC STT DETECTION (Deepgram auto-detects any spoken language):
+                # dg_lang = "multi"
+                
+                # OPTION B: LOCKED STT CONFIGURATION (Locks Deepgram to improve transcription accuracy):
+                dg_lang = "hi" if session.language == "hi" else ("gu" if session.language == "gu" else "en")
+                
                 stt_engine = DeepgramStreamingSTT(
                     on_interim=on_interim,
                     on_final=on_final,
                     on_speech_started=on_speech_started,
                     on_speculative=on_speculative,
-                    language="multi"
+                    language=dg_lang
                 )
                 await stt_engine.start()
                 await ws.send_json({"type": "call_accepted", "session_id": session.session_id})

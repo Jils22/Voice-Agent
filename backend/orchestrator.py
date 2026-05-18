@@ -19,16 +19,33 @@ async def run_pipeline(
     initial_chunks: list[str] = None
 ):
     global active_turn_id
+    
+    # Proactively clear client-side playback queue to instantly stop any running/queued previous responses
+    await ws_send_json({"type": "clear_queue"})
+    await ws_send_json({"type": "tts_start", "turn_id": turn_id})
+    
     active_turn_id = turn_id
     metrics = TurnMetrics(turn_id=turn_id)
     start_time = asyncio.get_event_loop().time()
 
     # 0. Check for Instant Farewell (Principle: Fast Exit)
-    farewells = ["bye", "goodbye", "alvida", "khuda hafiz", "phari malishu", "shubh ratri", "theek hai bye", "bas theek hai bye"]
-    clean_text = text.lower().strip().replace(".", "").replace("!", "")
+    farewells = [
+        "bye", "goodbye", "chalo bye",
+        "alvida", "khuda hafiz", "fir milenge", "phari malishu", "shubh ratri", "theek hai bye", "bas theek hai bye",
+        "dhanyavad", "dhanyawaad", "धन्यवाद", "shukriya", "शुक्रिया", "thanks", "thank you", "thnx",
+        "aavjo", "avjo", "આવજો",
+        "bas itna hi", "bas", "bas itnu j", "बस", "બસ",
+        "aatlu j chhe", "aatlu j", "આટલું જ છે", "આટલું જ"
+    ]
+    clean_text = text.lower().strip().replace(".", "").replace("!", "").replace(",", "").replace("?", "")
     if any(f in clean_text for f in farewells):
-        farewell_msg = "जी, बिल्कुल। अपना ख्याल रखिये, गुडबाय!" if "hi" in lang.lower() else "Goodbye! Have a great day."
-        await ws_send_json({"type": "tts_start", "turn_id": turn_id})
+        if "gu" in lang.lower():
+            farewell_msg = "તમારો ખૂબ ખૂબ આભાર! પોતાનું ધ્યાન રાખજો, આવજો!"
+        elif "hi" in lang.lower():
+            farewell_msg = "जी, बिल्कुल। आपका बहुत-बहुत धन्यवाद! अपना ख्याल रखिएगा, अलविदा!"
+        else:
+            farewell_msg = "You are very welcome! Take care and have a great day. Goodbye!"
+
         async for pcm in synthesize_pcm_stream(farewell_msg, lang):
             if pcm:
                 await ws_send_bytes(pcm)
@@ -72,8 +89,6 @@ async def run_pipeline(
     full_answer = ""
     token_buffer = ""
     llm_start = asyncio.get_event_loop().time()
-
-    await ws_send_json({"type": "tts_start", "turn_id": turn_id})
 
     async for token in generate_answer_stream(text, chunks, lang, history):
         if turn_id != active_turn_id:
