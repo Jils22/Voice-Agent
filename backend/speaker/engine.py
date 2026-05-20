@@ -23,12 +23,25 @@ def wav_to_int16(wav_bytes: bytes) -> np.ndarray:
         with wave.open(bf, 'rb') as wf:
             return np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16).copy()
 
+def _normalize_brand_names(text: str) -> str:
+    """
+    Replace brand/product names that TTS models mispronounce with phonetic spellings.
+    Sarvam bulbul:v2 reads 'Suvit' as 'huvit' — 'Soovit' is the correct phonetic form.
+    """
+    import re
+    # Case-insensitive replacement, preserving surrounding context
+    text = re.sub(r'\bSuvit\b', 'Soovit', text, flags=re.IGNORECASE)
+    return text
+
 async def synthesize_pcm_stream(text: str, lang: str, check_stale = None):
     """Synthesize one phrase chunk. Apply fade in/out for smooth boundaries."""
     # Safeguard: Skip empty or non-speakable punctuation-only strings
     import re
     if not text or not re.search(r'\w', text):
         return
+
+    # Normalize brand names before sending to TTS
+    text = _normalize_brand_names(text)
 
     if check_stale and check_stale():
         return

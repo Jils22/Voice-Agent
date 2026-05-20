@@ -4,6 +4,35 @@ from thinker.prompts import SYSTEM_PROMPT, format_history
 
 client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 
+async def translate_query_for_retrieval(query: str, lang: str) -> str:
+    """
+    Translates a non-English query into English so it can match the English doc index.
+    Only translates if the language is Gujarati or Hindi — English queries pass through unchanged.
+    This is a lightweight single-turn call (no streaming, no history needed).
+    """
+    if lang == "en":
+        return query
+
+    response = await client.chat.completions.create(
+        model=PRIMARY_LLM_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a translation assistant. Translate the user's query into English. "
+                    "Output ONLY the English translation — no explanation, no extra text. "
+                    "Preserve technical terms like 'ledger', 'Tally', 'Suvit', 'GST' as-is."
+                )
+            },
+            {"role": "user", "content": query}
+        ],
+        temperature=0.0,
+        max_tokens=150,
+    )
+    translated = response.choices[0].message.content.strip()
+    print(f"[RAG] Query translated ({lang}→en): '{query}' → '{translated}'")
+    return translated
+
 async def generate_answer_stream(query: str, retrieved_chunks: list[str], lang: str, history: list[dict]):
     """Streams tokens from GPT-4o-mini."""
     context = "\n\n".join(retrieved_chunks)

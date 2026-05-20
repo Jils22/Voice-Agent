@@ -1,9 +1,9 @@
 import asyncio
 from typing import Optional
 from library.engine import retrieve
-from thinker.engine import generate_answer_stream
+from thinker.engine import generate_answer_stream, translate_query_for_retrieval
 from speaker.engine import synthesize_pcm_stream
-from shared.text import split_for_tts, get_filler
+from shared.text import split_for_tts, get_filler, needs_filler, strip_markdown, is_farewell, is_thanks
 from shared.metrics import TurnMetrics, log_turn
 
 # Global state to track turn ownership
@@ -40,18 +40,8 @@ async def run_pipeline(
         return turn_id != active_turn_id
 
     # 0. Instant Farewell Fast-Exit ───────────────────────────────────
-    farewells = [
-        "bye", "goodbye", "alvida", "khuda hafiz", "tata", "exit", "quit", "see you",
-        "phari malishu", "shubh ratri", "theek hai bye", "bas theek hai bye", "aavjo",
-        "thank you", "thankyou", "thanks", "dhanyawad", "shukriya", "aabhar", 
-        "આભાર", "ધન્યવાદ", "ધન્ય વાદ", "થોન્ક યુ", "થેન્ક યુ"
-    ]
-    thanks_terms = [
-        "thank", "thanks", "dhanyawad", "shukriya", "aabhar", "આભાર", "ધન્યવાદ", "થોન્ક યુ", "થેન્ક યુ"
-    ]
-    clean_text = text.lower().strip().replace(".", "").replace("!", "")
-    if any(f in clean_text for f in farewells):
-        has_thanks = any(t in clean_text for t in thanks_terms)
+    if is_farewell(text):
+        has_thanks = is_thanks(text)
         if lang == "hi":
             if has_thanks:
                 farewell_msg = "आपका बहुत-बहुत स्वागत है! सुवित सहायता से बात करने के लिए धन्यवाद, अपना ख्याल रखिये, गुडबाय!"
@@ -87,30 +77,35 @@ async def run_pipeline(
     # 1. Kick off RAG retrieval in background immediately ──────────────
     retrieval_task = None
     if not initial_chunks:
-        retrieval_task = asyncio.create_task(asyncio.to_thread(retrieve, text))
+        # Translate non-English queries to English before retrieval so they match
+        # the English doc index. The original query is still used for the LLM answer.
+        retrieval_query = await translate_query_for_retrieval(text, lang)
+        retrieval_task = asyncio.create_task(asyncio.to_thread(retrieve, retrieval_query))
 
     # 2. Speak filler instantly to mask latency ───────────────────────
     # Check turn_id on EVERY PCM chunk so barge-in kills filler mid-word.
     tts_started = False  # Track if tts_start was signaled (shared across filler & main response)
     if not (initial_chunks and "GREETING_BYPASS_RAG" in initial_chunks):
-        filler = get_filler(lang)
-        filler_start = asyncio.get_event_loop().time()
-        async for pcm in synthesize_pcm_stream(filler, lang, check_stale=is_stale):
-            if is_stale():
-                # Interrupted during filler — cancel background retrieval immediately
-                if retrieval_task:
-                    retrieval_task.cancel()
-                if tts_started:
-                    await ws_send_json({"type": "tts_end", "turn_id": turn_id})
-                metrics.stale_response = True
-                return
-            if pcm:
-                if not tts_started:
-                    tts_started = True
-                    await ws_send_json({"type": "tts_start", "turn_id": turn_id})
-                await ws_send_bytes(pcm)
-                if metrics.filler_ms == 0:
-                    metrics.filler_ms = int((asyncio.get_event_loop().time() - filler_start) * 1000)
+        # Only play a filler for genuine questions — skip it for greetings, acks, short social replies
+        if needs_filler(text, lang):
+            filler = get_filler(lang)
+            filler_start = asyncio.get_event_loop().time()
+            async for pcm in synthesize_pcm_stream(filler, lang, check_stale=is_stale):
+                if is_stale():
+                    # Interrupted during filler — cancel background retrieval immediately
+                    if retrieval_task:
+                        retrieval_task.cancel()
+                    if tts_started:
+                        await ws_send_json({"type": "tts_end", "turn_id": turn_id})
+                    metrics.stale_response = True
+                    return
+                if pcm:
+                    if not tts_started:
+                        tts_started = True
+                        await ws_send_json({"type": "tts_start", "turn_id": turn_id})
+                    await ws_send_bytes(pcm)
+                    if metrics.filler_ms == 0:
+                        metrics.filler_ms = int((asyncio.get_event_loop().time() - filler_start) * 1000)
 
     # 3. Await retrieval (or use pre-cached speculative chunks) ────────
     retrieval_start = asyncio.get_event_loop().time()
@@ -179,7 +174,7 @@ async def run_pipeline(
     # Speak any remaining buffered tokens
     if token_buffer.strip() and not is_stale():
         phrase_lang = detect_text_language(token_buffer, lang)
-        async for pcm in synthesize_pcm_stream(token_buffer, phrase_lang, check_stale=is_stale):
+        async for pcm in synthesize_pcm_stream(strip_markdown(token_buffer), phrase_lang, check_stale=is_stale):
             if is_stale():
                 if tts_started:
                     await ws_send_json({"type": "tts_end", "turn_id": turn_id})

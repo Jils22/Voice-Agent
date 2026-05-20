@@ -160,16 +160,19 @@ class DeepgramStreamingSTT:
                     # Stable for 600ms and at least 4 words — start retrieval early
                     if self._speculative_task is None or self._speculative_task.done():
                         self._speculative_task = asyncio.create_task(
-                            self._run_speculative(text)
+                            self._run_speculative(text, lang)
                         )
 
             if self._on_interim:
                 await self._on_interim(text, lang)
 
-    async def _run_speculative(self, text: str):
+    async def _run_speculative(self, text: str, lang: str = "en"):
         try:
+            from thinker.engine import translate_query_for_retrieval
+            # Translate non-English interim text before retrieval so it matches the English index
+            retrieval_query = await translate_query_for_retrieval(text, lang)
             # Offload to thread to keep the STT loop fast
-            chunks = await asyncio.to_thread(retrieve, text)
+            chunks = await asyncio.to_thread(retrieve, retrieval_query)
             if self._on_speculative:
                 await self._on_speculative(chunks)
         except Exception as e:
