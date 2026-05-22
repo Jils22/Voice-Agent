@@ -10,12 +10,13 @@ class MicProcessor extends AudioWorkletProcessor {
     // Used ONLY for instant interrupt detection — not for gating PCM.
     // Deepgram cloud VAD handles actual transcript boundaries.
     // ── Local VAD state ──────────────────────────────────────────
-    this._IDLE_THRESH    = 0.025;  // Background noise gate when agent is silent
-    this._AGENT_THRESH   = 0.085;  // Raised threshold while agent speaks to ignore speaker echo feedback
-    this._IDLE_FRAMES    = 8;      // ~64ms  — quick pickup when idle
-    this._AGENT_FRAMES   = 12;     // ~96ms  — robust barge-in confirmation window
+    this._noiseFloor      = 0.01;   // Dynamic noise floor moving average
+    this._noiseOffsetIdle = 0.02;   // Threshold offset when agent is silent
+    this._noiseOffsetAgent= 0.05;   // Threshold offset when agent is speaking
+    this._IDLE_FRAMES     = 8;      // ~64ms  — quick pickup when idle
+    this._AGENT_FRAMES    = 15;     // ~120ms — robust barge-in confirmation window
     
-    this._SILENCE_FRAMES = 60;     
+    this._SILENCE_FRAMES  = 60;     
     this._speechCount    = 0;
     this._silenceCount   = 0;
     this._inSpeech       = false;
@@ -46,7 +47,15 @@ class MicProcessor extends AudioWorkletProcessor {
     this.port.postMessage({ type: 'energy', v: this._energy });
 
     // ── Dynamic VAD Thresholds (Principle: Intelligent Barge-in) ──
-    const thresh = this._agentOn ? this._AGENT_THRESH : this._IDLE_THRESH;
+    // Adapt noise floor only when no one is speaking to avoid tracking voice as noise
+    if (!this._agentOn && !this._inSpeech) {
+        this._noiseFloor = this._noiseFloor * 0.99 + rms * 0.01;
+    }
+    
+    // Ensure a minimum base floor to avoid hypersensitivity in absolute silence
+    const baseFloor = Math.max(0.005, this._noiseFloor);
+    
+    const thresh = this._agentOn ? (baseFloor + this._noiseOffsetAgent) : (baseFloor + this._noiseOffsetIdle);
     const frames = this._agentOn ? this._AGENT_FRAMES : this._IDLE_FRAMES;
 
     if (rms > thresh) {

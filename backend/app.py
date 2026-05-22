@@ -84,6 +84,7 @@ class SessionState:
     detected_lang: str = "en"      # dynamically updated from Deepgram each turn
     speculative_chunks: list[str] = field(default_factory=list)
     active_task: Optional[asyncio.Task] = None
+    was_interrupted: bool = False  # True if agent was barged-in; triggers recovery phrase on next turn
 
 sessions: dict[str, SessionState] = {}
 
@@ -109,24 +110,55 @@ async def voice_call(ws: WebSocket):
     stt_engine: Optional[DeepgramStreamingSTT] = None
 
     def clean_transcription_text(text: str) -> str:
-        # Clean up common Deepgram phonetic transcription errors for Suvit brand and Tally integrations
+        """
+        Auto-correct STT phonetic mismatches for brand names.
+        Deepgram returns these when users with different accents say our brand names.
+        These corrections apply to the CHAT LOG displayed on screen.
+        """
         import re
         corrections = [
-            (r"\bsweet\b", "Suvit"),
-            (r"\bdelhi\b", "Tally"),
-            (r"\bdaily\b", "Tally"),
-            (r"\btele\b", "Tally"),
-            (r"\bteli\b", "Tally"),
-            (r"\bsuvit\b", "Suvit"),
-            (r"\btally\b", "Tally"),
-            (r"\bसवीत\b", "सुवित"),
-            (r"\bस्वीट\b", "सुवित"),
-            (r"\bडेली\b", "टैली"),
-            (r"\bदल्ली\b", "टैली"),
-            (r"\bदिल्ली\b", "टैली"),
-            (r"\bटेली\b", "टैली"),
-            (r"\bતલી\b", "સુવિત"),
-            (r"\bડેલી\b", "ટેલી")
+            # ── Suvit variants ─────────────────────────────────────────────
+            # English accents: "sweet", "suite", "suit", "suvite", "soovit", "sweeti", "huvit"
+            (r"\bsweet\b",   "Suvit"),
+            (r"\bsuite\b",   "Suvit"),
+            (r"\bsuvite\b",  "Suvit"),
+            (r"\bsoovit\b",  "Suvit"),
+            (r"\bsweeti\b",  "Suvit"),
+            (r"\bhuvit\b",   "Suvit"),
+            (r"\bswit\b",    "Suvit"),
+            (r"\bsuwit\b",   "Suvit"),
+            (r"\bsuvite\b",  "Suvit"),
+            # Keep these — common Deepgram mistakes
+            (r"\bsweet\b",   "Suvit"),
+            (r"\bsuvit\b",   "Suvit"),   # correct capitalisation
+            # ── Vyapar variants ────────────────────────────────────────────
+            # Deepgram returns "vappaar", "vyapaar", "vyapat", "viapar"
+            (r"\bvyapaar\b",  "Vyapar"),
+            (r"\bviyaapar\b", "Vyapar"),  # from TTS phonetic that got transcribed back
+            (r"\bvyapat\b",   "Vyapar"),
+            (r"\bviapar\b",   "Vyapar"),
+            (r"\bvapper\b",   "Vyapar"),
+            (r"\bvyapper\b",  "Vyapar"),
+            (r"\bvyappar\b",  "Vyapar"),
+            (r"\bvappaar\b",  "Vyapar"),
+            (r"\bvyapar\b",   "Vyapar"),  # correct capitalisation
+            # ── Tally variants ─────────────────────────────────────────────
+            (r"\bdelhi\b",   "Tally"),
+            (r"\bdaily\b",   "Tally"),
+            (r"\btele\b",    "Tally"),
+            (r"\bteli\b",    "Tally"),
+            (r"\btally\b",   "Tally"),
+            # ── Hindi Suvit variants ───────────────────────────────────────
+            (r"\bसवीत\b",    "सुवित"),
+            (r"\bस्वीट\b",   "सुवित"),
+            # ── Hindi Tally variants ───────────────────────────────────────
+            (r"\bडेली\b",    "टैली"),
+            (r"\bदल्ली\b",   "टैली"),
+            (r"\bदिल्ली\b",  "टैली"),
+            (r"\bटेली\b",    "टैली"),
+            # ── Gujarati variants ──────────────────────────────────────────
+            (r"\bતલી\b",     "ટેલી"),
+            (r"\bડેલી\b",    "ટેલી"),
         ]
         cleaned = text
         for pattern, replacement in corrections:
@@ -179,6 +211,19 @@ async def voice_call(ws: WebSocket):
             session.active_task.cancel()
             pipeline.active_turn_id = None
             await ws.send_json({"type": "clear_queue"})
+
+        # ── Interruption Recovery Phrase ───────────────────────────────
+        # If the agent was interrupted in its previous turn, start the next reply
+        # with a natural, human-like recovery phrase before answering the question.
+        if session.was_interrupted:
+            session.was_interrupted = False
+            recovery = {
+                "en": "Oh sorry, go ahead — ",
+                "hi": "माफ‍ कीजिए, हाँ बोलिए — ",
+                "gu": "માફ‍ કરો, હા બોલો — ",
+            }.get(lang_to_use, "Oh sorry, go ahead — ")
+            text = recovery + text
+            logger.info(f"[RECOVERY] Prepending recovery phrase for lang={lang_to_use}")
 
         # 1. Update UI with the detected language
         await ws.send_json({"type": "transcript", "user": text, "language": lang_to_use})
@@ -252,9 +297,9 @@ async def voice_call(ws: WebSocket):
                 
                 # Greet in the pre-selected tab language (before dynamic detection kicks in)
                 greeting_text = {
-                    "en": "Hello! I am your Suvit AI assistant. How can I help you today?",
-                    "hi": "नमस्ते! मैं आपका सुवित एआई सहायक हूँ। मैं आपकी क्या मदद कर सकता हूँ?",
-                    "gu": "નમસ્તે! હું તમારો સુવિત એઆઈ સહાયક છું. હું તમને કેવી રીતે મદદ કરી શકું?"
+                    "en": "Hello! I am Anushka from Suvit Support. How can I help you today?",
+                    "hi": "नमस्ते! मैं अनुष्का हूँ, सुवित सपोर्ट से। मैं आपकी क्या मदद कर सकती हूँ?",
+                    "gu": "નમસ્તે! હું અનુષ્કા છું, સુવિત સપોર્ટ તરફથી. હું તમારી કેવી રીતે મદદ કરી શકું?"
                 }.get(session.language[:2], "Hello!")
                 
                 async def send_greeting():
@@ -276,6 +321,7 @@ async def voice_call(ws: WebSocket):
             elif msg_type == "interrupt":
                 # Explicit interrupt from client
                 pipeline.active_turn_id = None
+                session.was_interrupted = True   # agent's next turn will begin with a recovery phrase
                 if session.active_task and not session.active_task.done():
                     logger.info("Interrupt message received: Cancelling active pipeline task.")
                     session.active_task.cancel()

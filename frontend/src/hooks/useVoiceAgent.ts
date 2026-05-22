@@ -53,6 +53,12 @@ export function useVoiceAgent() {
     const gainNodeRef = useRef<GainNode | null>(null);
     const nextPlayTimeRef = useRef<number>(0);
 
+    // ── Human-like audio effects ──────────────────────────────────────
+    const ringAudioRef      = useRef<HTMLAudioElement | null>(null);   // phone ring on connect
+    const typingAudioRef    = useRef<HTMLAudioElement | null>(null);   // typing during filler
+    const mhmAudioRef       = useRef<HTMLAudioElement | null>(null);   // backchannel "Mhm"
+    const bcTimerRef        = useRef<ReturnType<typeof setTimeout> | null>(null); // backchannel timer
+
     const safeTransition = useCallback((to: Status) => {
         setStatus(prev => {
             if (VALID_TRANSITIONS[prev].includes(to)) {
@@ -74,6 +80,32 @@ export function useVoiceAgent() {
         }
     }, [safeTransition]);
 
+    // ── Stop ring with a smooth 200ms fade-out ────────────────────────
+    const stopRing = useCallback(() => {
+        const ring = ringAudioRef.current;
+        if (!ring || ring.paused) return;
+        let vol = ring.volume;
+        const fadeStep = setInterval(() => {
+            vol = Math.max(0, vol - 0.1);
+            ring.volume = vol;
+            if (vol <= 0) {
+                clearInterval(fadeStep);
+                ring.pause();
+                ring.currentTime = 0;
+                ring.volume = 1.0; // reset for next use
+            }
+        }, 20);
+    }, []);
+
+    // ── Stop typing sound immediately ────────────────────────────────
+    const stopTyping = useCallback(() => {
+        const typing = typingAudioRef.current;
+        if (typing && !typing.paused) {
+            typing.pause();
+            typing.currentTime = 0;
+        }
+    }, []);
+
     const stopPlayback = useCallback(() => {
         // Immediately tell the worklet the agent stopped — prevents stale barge-in guards
         agentSpeakingRef.current = false;
@@ -87,7 +119,9 @@ export function useVoiceAgent() {
         playContextRef.current = null;
         gainNodeRef.current = null;
         nextPlayTimeRef.current = 0;
-    }, []);
+        // Also stop typing if playback is killed (e.g. barge-in)
+        stopTyping();
+    }, [stopTyping]);
 
     const ensurePlayCtx = useCallback(async () => {
         if (playContextRef.current && playContextRef.current.state !== "closed") {
@@ -123,6 +157,10 @@ export function useVoiceAgent() {
         }
         
         stopPlayback();
+        stopRing();
+        stopTyping();
+        // Cancel any pending backchannel timer
+        if (bcTimerRef.current) { clearTimeout(bcTimerRef.current); bcTimerRef.current = null; }
 
         if (wsRef.current) {
             if (wsRef.current.readyState === WebSocket.OPEN) {
@@ -136,7 +174,7 @@ export function useVoiceAgent() {
         setVadEnergy(0);
         setIsMuted(false);
         if(shouldResetMessages) setMessages([]);
-    }, [stopPlayback, safeTransition]);
+    }, [stopPlayback, stopRing, stopTyping, safeTransition]);
 
     const connect = useCallback(async (languageSelection: string) => {
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -181,6 +219,8 @@ export function useVoiceAgent() {
             const message = JSON.parse(event.data);
             switch (message.type) {
                 case "call_accepted":
+                    // 📞 Ring ends — call has connected!
+                    stopRing();
                     safeTransition("listening");
                     break;
                 case "transcript":
@@ -196,16 +236,23 @@ export function useVoiceAgent() {
                 case "tts_start":
                     setAgentSpeaking(true);
                     ensurePlayCtx();
+                    // ⌨️ Typing sound disabled — uncomment to re-enable
+                    // if (typingAudioRef.current) {
+                    //     typingAudioRef.current.volume = 0.14;
+                    //     typingAudioRef.current.currentTime = 0;
+                    //     typingAudioRef.current.play().catch(() => {});
+                    // }
                     break;
                 case "tts_end":
                     setAgentSpeaking(false);
+                    stopTyping();
                     safeTransition("listening");
                     break;
                 case "clear_queue":
                     // Instant barge-in: kill all buffered audio and reset interrupt guard
                     // so a rapid second interrupt works immediately after the first.
                     interruptSentRef.current = false;
-                    stopPlayback();
+                    stopPlayback(); // also calls stopTyping internally
                     safeTransition("recovering");
                     setTimeout(() => safeTransition("listening"), 150);
                     break;
@@ -234,6 +281,25 @@ export function useVoiceAgent() {
         setMessages([]);
         setCallActive(true);
         setCurrentLang(lang);
+
+        // ── Pre-initialise audio effect elements (done once per call) ────
+        if (!ringAudioRef.current) {
+            ringAudioRef.current = new Audio("/ring.wav");
+            ringAudioRef.current.loop = true;
+        }
+        if (!typingAudioRef.current) {
+            typingAudioRef.current = new Audio("/typing.wav");
+            typingAudioRef.current.loop = true;
+        }
+        if (!mhmAudioRef.current) {
+            mhmAudioRef.current = new Audio("/mhm.wav");
+            mhmAudioRef.current.loop = false;
+        }
+
+        // 📞 Start ringing immediately — masks the WebSocket connection latency
+        ringAudioRef.current.volume = 1.0;
+        ringAudioRef.current.currentTime = 0;
+        ringAudioRef.current.play().catch(() => {});
         
         try {
             const ws = await connect(lang);
@@ -261,7 +327,29 @@ export function useVoiceAgent() {
 
             processor.port.onmessage = ({ data }) => {
                 if (data.type === "energy") {
-                    setVadEnergy(Math.min(100, data.v * 1200));
+                    const displayEnergy = Math.min(100, data.v * 1200);
+                    setVadEnergy(displayEnergy);
+
+                    // 🎧 Backchannel: if agent is silent and user speaks for 4s, play "Mhm" once
+                    if (!agentSpeakingRef.current && displayEnergy > 18) {
+                        if (!bcTimerRef.current) {
+                            bcTimerRef.current = setTimeout(() => {
+                                bcTimerRef.current = null;
+                                // Only play if agent is still silent (no barge-in race)
+                                if (!agentSpeakingRef.current && mhmAudioRef.current) {
+                                    mhmAudioRef.current.volume = 0.28;
+                                    mhmAudioRef.current.currentTime = 0;
+                                    mhmAudioRef.current.play().catch(() => {});
+                                }
+                            }, 4000);
+                        }
+                    } else {
+                        // Energy dropped — cancel the backchannel timer
+                        if (bcTimerRef.current) {
+                            clearTimeout(bcTimerRef.current);
+                            bcTimerRef.current = null;
+                        }
+                    }
                 } else if (data.type === "pcm") {
                     // Gate PCM send behind mute state. When muted, send silence to Deepgram
                     // would let its cloud VAD fire SpeechStarted from background noise,
@@ -277,16 +365,26 @@ export function useVoiceAgent() {
                         // Instantly transition to interrupting
                         safeTransition("interrupting");
                         stopPlayback();
+                        
+                        // Failsafe: if backend clear_queue is dropped, reset state after 1 second
+                        setTimeout(() => {
+                            if (interruptSentRef.current) {
+                                interruptSentRef.current = false;
+                                safeTransition("recovering");
+                                setTimeout(() => safeTransition("listening"), 150);
+                            }
+                        }, 1000);
                     }
                 }
             };
 
             srcNode.connect(processor);
         } catch (err: any) {
+            stopRing(); // make sure ring stops if connection fails
             setMessages(prev => [...prev, { role: "system", text: "⚠ Connection Error: " + err.message }]);
             disconnect(false);
         }
-    }, [connect, disconnect, stopPlayback, safeTransition]);
+    }, [connect, disconnect, stopPlayback, stopRing, stopTyping, safeTransition]);
 
     const toggleMute = useCallback(() => {
         if (!streamRef.current) return;

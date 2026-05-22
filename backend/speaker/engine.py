@@ -1,8 +1,20 @@
 import httpx
+import asyncio
+import re
+import base64
 import numpy as np
 import io
 import wave
 from settings import SARVAMAI_API_KEY, OUTPUT_SAMPLE_RATE
+
+# ── Sarvam bulbul:v2 — locked female voices per language ────────────────────
+# 'anushka' is the best female voice for all three supported languages.
+# Mapping is explicit so no language ever silently falls through to a male voice.
+FEMALE_VOICE_MAP: dict[str, str] = {
+    "en-IN": "anushka",
+    "hi-IN": "anushka",
+    "gu-IN": "anushka",
+}
 
 FADE_SAMPLES = int(OUTPUT_SAMPLE_RATE * 0.025)  # 25ms smoothing
 
@@ -25,18 +37,25 @@ def wav_to_int16(wav_bytes: bytes) -> np.ndarray:
 
 def _normalize_brand_names(text: str) -> str:
     """
-    Replace brand/product names that TTS models mispronounce with phonetic spellings.
-    Sarvam bulbul:v2 reads 'Suvit' as 'huvit' — 'Soovit' is the correct phonetic form.
+    Replace brand/product names that TTS models mispronounce.
+    enable_preprocessing MUST be False — Sarvam's own preprocessor otherwise
+    overrides our substitutions before speaking.
+
+    Strategy: Embed Devanagari (Hindi) script inline for brand names.
+    bulbul:v2 is trained on code-mixed Indian text, so Devanagari characters
+    have a 100% unambiguous phonetic mapping — far more reliable than any
+    Latin phonetic spelling which the neural model can still misinterpret.
+
+      - 'Suvit'  → 'सुवित'    (Devanagari — reads perfectly as "Su-vit")
+      - 'Vyapar' → 'व्यापार'   (Devanagari — reads perfectly as "Vyaa-paar")
     """
-    import re
-    # Case-insensitive replacement, preserving surrounding context
-    text = re.sub(r'\bSuvit\b', 'Soovit', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bSuvit\b',  'सुवित',   text, flags=re.IGNORECASE)
+    text = re.sub(r'\bVyapar\b', 'व्यापार', text, flags=re.IGNORECASE)
     return text
 
 async def synthesize_pcm_stream(text: str, lang: str, check_stale = None):
     """Synthesize one phrase chunk. Apply fade in/out for smooth boundaries."""
     # Safeguard: Skip empty or non-speakable punctuation-only strings
-    import re
     if not text or not re.search(r'\w', text):
         return
 
@@ -46,16 +65,17 @@ async def synthesize_pcm_stream(text: str, lang: str, check_stale = None):
     if check_stale and check_stale():
         return
 
-    # Map short language codes to regional codes required by Sarvam TTS
+    # Map any language code variant → canonical Sarvam regional code
+    # Split on "-" to handle both "en" and "en-IN" inputs.
+    _base = lang.lower().split("-")[0]
     lang_map = {
         "en": "en-IN",
         "hi": "hi-IN",
         "gu": "gu-IN",
-        "en-in": "en-IN",
-        "hi-in": "hi-IN",
-        "gu-in": "gu-IN"
     }
-    target_lang = lang_map.get(lang.lower().split("-")[0], "en-IN")
+    target_lang = lang_map.get(_base, "en-IN")
+    # Always use the explicitly-chosen female voice for this language
+    speaker_voice = FEMALE_VOICE_MAP.get(target_lang, "anushka")
 
     # Note: Using Sarvam API for primary, would need fallback to edge-tts if missing
     async with httpx.AsyncClient(verify=False) as client:
@@ -64,14 +84,15 @@ async def synthesize_pcm_stream(text: str, lang: str, check_stale = None):
         payload = {
             "inputs": [text],
             "target_language_code": target_lang,
-            "speaker": "anushka",
+            "speaker": speaker_voice,
             "pitch": 0,
             "pace": 1.1,
             "loudness": 1.5,
             "speech_sample_rate": OUTPUT_SAMPLE_RATE,
-            "enable_preprocessing": True,
+            "enable_preprocessing": False,
             "model": "bulbul:v2"
         }
+        print(f"[TTS SEND] lang={target_lang} | text={text[:80]}")
         
         retries = 3
         delay = 0.1  # start with 100ms
@@ -87,7 +108,6 @@ async def synthesize_pcm_stream(text: str, lang: str, check_stale = None):
                 response.raise_for_status()
                 data = response.json()
                 wav_b64 = data["audios"][0]
-                import base64
                 wav_bytes = base64.b64decode(wav_b64)
                 pcm = wav_to_int16(wav_bytes)
                 pcm = apply_fade_in(apply_fade_out(pcm))
