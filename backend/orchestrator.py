@@ -1,10 +1,13 @@
 import asyncio
+import logging
 from typing import Optional
 from library.engine import retrieve
 from thinker.engine import generate_answer_stream, translate_query_for_retrieval
 from speaker.engine import synthesize_pcm_stream
 from shared.text import split_for_tts, get_filler, needs_filler, strip_markdown, is_farewell, is_thanks
 from shared.metrics import TurnMetrics, log_turn
+
+logger = logging.getLogger("orchestrator")
 
 # Global state to track turn ownership
 active_turn_id: Optional[str] = None
@@ -130,6 +133,13 @@ async def run_pipeline(
         if tts_started:
             await ws_send_json({"type": "tts_end", "turn_id": turn_id})
         return
+
+    # ── Log retrieval result so we can diagnose "no info" issues ──────
+    logger.info(f"[RETRIEVAL] {len(chunks)} chunks returned for turn {turn_id[:8]}")
+    if chunks:
+        logger.info(f"[RETRIEVAL] Top chunk preview: {chunks[0][:120]!r}")
+    else:
+        logger.warning(f"[RETRIEVAL] ⚠️  EMPTY CHUNKS — LLM will say 'no information'. Query was: {text[:80]!r}")
 
     # 4. Stream LLM tokens + TTS in a tight interleaved pipeline ──────
     full_answer = ""

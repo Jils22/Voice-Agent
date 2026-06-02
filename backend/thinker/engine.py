@@ -30,7 +30,7 @@ async def translate_query_for_retrieval(query: str, lang: str) -> str:
         max_tokens=150,
     )
     translated = response.choices[0].message.content.strip()
-    print(f"[RAG] Query translated ({lang}→en): '{query}' → '{translated}'")
+    print(f"[RAG] Query translated ({lang}->en): '{query}' -> '{translated}'")
     return translated
 
 async def generate_answer_stream(query: str, retrieved_chunks: list[str], lang: str, history: list[dict]):

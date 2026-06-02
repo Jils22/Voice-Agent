@@ -143,7 +143,7 @@ class DeepgramStreamingSTT:
             # Apply smoothing only on final turns (reduces noise from interim misdetections)
             lang = self._smooth_language(detected)
             self._last_interim = ""  # reset
-            log.info("[STT] Final | raw_lang=%s → smoothed=%s | text=%s", detected, lang, text[:60])
+            log.info("[STT] Final | raw_lang=%s -> smoothed=%s | text=%s", detected, lang, text[:60])
             if self._on_final:
                 await self._on_final(text, lang)
         else:

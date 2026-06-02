@@ -99,34 +99,49 @@ def get_reranker():
 
 def retrieve(query: str, k: int = 5) -> list[str]:
     """Hybrid retrieval (FAISS + BM25) followed by Cross-Encoder reranking."""
+    import traceback
     print(f"[RAG] Query: {query}")
     
-    retriever = get_retriever()
-    # Get more candidates than k for reranking
-    docs = retriever.invoke(query)
-    
-    if not docs:
-        return []
+    try:
+        retriever = get_retriever()
+        if retriever is None:
+            print("[RAG ERROR] Retriever is None — index may not have been loaded. Returning empty.")
+            return []
 
-    # Deduplicate candidates
-    seen = set()
-    candidates = []
-    for d in docs:
-        content = d.page_content.strip()
-        if content and content not in seen:
-            candidates.append(content)
-            seen.add(content)
-
-    # Reranking (Principle 73)
-    if len(candidates) > 1:
-        reranker = get_reranker()
-        pairs = [[query, c] for c in candidates]
-        scores = reranker.predict(pairs)
+        # Get more candidates than k for reranking
+        docs = retriever.invoke(query)
+        print(f"[RAG] Raw docs returned: {len(docs) if docs else 0}")
         
-        # Sort by score
-        ranked_indices = np.argsort(scores)[::-1]
-        results = [candidates[i] for i in ranked_indices[:k]]
-        print(f"[RAG] Reranked {len(candidates)} candidates down to {len(results)}")
-        return results
-    
-    return candidates[:k]
+        if not docs:
+            print("[RAG WARNING] Retriever returned 0 docs for query.")
+            return []
+
+        # Deduplicate candidates
+        seen = set()
+        candidates = []
+        for d in docs:
+            content = d.page_content.strip()
+            if content and content not in seen:
+                candidates.append(content)
+                seen.add(content)
+
+        print(f"[RAG] Unique candidates after dedup: {len(candidates)}")
+
+        # Reranking
+        if len(candidates) > 1:
+            reranker = get_reranker()
+            pairs = [[query, c] for c in candidates]
+            scores = reranker.predict(pairs)
+            
+            # Sort by score
+            ranked_indices = np.argsort(scores)[::-1]
+            results = [candidates[i] for i in ranked_indices[:k]]
+            print(f"[RAG] Reranked {len(candidates)} candidates down to {len(results)}")
+            return results
+        
+        return candidates[:k]
+
+    except Exception as e:
+        print(f"[RAG CRITICAL ERROR] retrieve() failed: {e}")
+        traceback.print_exc()
+        return []
