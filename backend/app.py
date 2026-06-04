@@ -47,9 +47,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from dataclasses import dataclass, field
 
 from settings import DEEPGRAM_API_KEY, OPENAI_API_KEY, INDEX_DIR
-from listener.engine import DeepgramStreamingSTT
-from orchestrator import run_pipeline
-import orchestrator as pipeline # aliased for minimal logic change
+from services.stt.engine import DeepgramStreamingSTT
+from core.orchestrator import run_pipeline
+from core import orchestrator as pipeline # aliased for minimal logic change
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -68,7 +68,7 @@ app.add_middleware(
 async def startup_event():
     logger.info("⚡ Warmup: Pre-loading RAG retrievers and rerankers...")
     try:
-        from library.engine import get_retriever, get_reranker
+        from services.rag.engine import get_retriever, get_reranker
         # Warmup models in background thread to avoid freezing the app initialization
         await asyncio.to_thread(get_retriever)
         await asyncio.to_thread(get_reranker)
@@ -306,7 +306,7 @@ async def voice_call(ws: WebSocket):
                     try:
                         logger.info(f"[GREETING] Starting synthesis for: {greeting_text}")
                         await ws.send_json({"type": "tts_start", "turn_id": "greeting"})
-                        from speaker.engine import synthesize_pcm_stream
+                        from services.tts.engine import synthesize_pcm_stream
                         async for pcm in synthesize_pcm_stream(greeting_text, session.language):
                             await ws.send_bytes(pcm)
                         await ws.send_json({"type": "tts_end", "turn_id": "greeting"})

@@ -284,15 +284,15 @@ export function useVoiceAgent() {
 
         // ── Pre-initialise audio effect elements (done once per call) ────
         if (!ringAudioRef.current) {
-            ringAudioRef.current = new Audio("/ring.wav");
+            ringAudioRef.current = new Audio("/sounds/ring.wav");
             ringAudioRef.current.loop = true;
         }
         if (!typingAudioRef.current) {
-            typingAudioRef.current = new Audio("/typing.wav");
+            typingAudioRef.current = new Audio("/sounds/typing.wav");
             typingAudioRef.current.loop = true;
         }
         if (!mhmAudioRef.current) {
-            mhmAudioRef.current = new Audio("/mhm.wav");
+            mhmAudioRef.current = new Audio("/sounds/mhm.wav");
             mhmAudioRef.current.loop = false;
         }
 

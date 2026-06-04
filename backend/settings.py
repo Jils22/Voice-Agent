@@ -24,6 +24,6 @@ INPUT_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 16000
 
 # --- RAG Config ---
-INDEX_DIR = os.path.join(os.path.dirname(__file__), "store", "index")
+INDEX_DIR = os.path.join(os.path.dirname(__file__), "data", "store", "index")
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"

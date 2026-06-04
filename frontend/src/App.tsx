@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useVoiceAgent } from "./hooks/useVoiceAgent";
-import { VoiceOrb } from "./components/VoiceOrb";
-import { ChatBubble } from "./components/ChatBubble";
-import { LanguageTabs } from "./components/LanguageTabs";
+import { VoiceOrb } from "./components/controls/VoiceOrb";
+import { ChatBubble } from "./components/chat/ChatBubble";
+import { LanguageTabs } from "./components/controls/LanguageTabs";
 
 export default function App() {
   const {

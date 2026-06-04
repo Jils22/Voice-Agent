@@ -10,7 +10,7 @@ from deepgram.listen.v1.types import (
     ListenV1SpeechStarted,
 )
 from settings import DEEPGRAM_API_KEY
-from library.engine import retrieve
+from services.rag.engine import retrieve
 
 log = logging.getLogger("stt")
 
@@ -168,7 +168,7 @@ class DeepgramStreamingSTT:
 
     async def _run_speculative(self, text: str, lang: str = "en"):
         try:
-            from thinker.engine import translate_query_for_retrieval
+            from services.llm.engine import translate_query_for_retrieval
             # Translate non-English interim text before retrieval so it matches the English index
             retrieval_query = await translate_query_for_retrieval(text, lang)
             # Offload to thread to keep the STT loop fast

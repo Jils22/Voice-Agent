@@ -1,6 +1,6 @@
 import openai
 from settings import OPENAI_API_KEY, PRIMARY_LLM_MODEL
-from thinker.prompts import SYSTEM_PROMPT, format_history
+from services.llm.prompts import SYSTEM_PROMPT, format_history
 
 client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY)
 

@@ -3,5 +3,3 @@ backend/.env
 venv/
 node_modules/
 **pycache**/
-package.json
-package-lock.json

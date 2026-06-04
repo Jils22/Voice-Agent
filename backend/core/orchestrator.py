@@ -1,11 +1,11 @@
 import asyncio
 import logging
 from typing import Optional
-from library.engine import retrieve
-from thinker.engine import generate_answer_stream, translate_query_for_retrieval
-from speaker.engine import synthesize_pcm_stream
-from shared.text import split_for_tts, get_filler, needs_filler, strip_markdown, is_farewell, is_thanks
-from shared.metrics import TurnMetrics, log_turn
+from services.rag.engine import retrieve
+from services.llm.engine import generate_answer_stream, translate_query_for_retrieval
+from services.tts.engine import synthesize_pcm_stream
+from utils.text import split_for_tts, get_filler, needs_filler, strip_markdown, is_farewell, is_thanks
+from utils.metrics import TurnMetrics, log_turn
 
 logger = logging.getLogger("orchestrator")
 
